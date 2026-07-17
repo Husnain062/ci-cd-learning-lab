@@ -60,6 +60,7 @@ jobs:
     name: Push image to GHCR
     needs: build
     runs-on: ubuntu-latest
+    if: github.event_name == 'push'
     permissions:
       contents: read
       packages: write
@@ -115,6 +116,7 @@ jobs:
     name: Federate with Vault and deploy via Helm
     needs: push
     runs-on: ubuntu-latest
+    if: github.event_name == 'push'
     permissions:
       id-token: write
       contents: read
