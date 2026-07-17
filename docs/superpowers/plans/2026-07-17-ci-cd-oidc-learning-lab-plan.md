@@ -431,6 +431,14 @@ git push
 
 ## Task 5: CI pipeline — lint, test, build, push
 
+The workflow triggers on both `push` and `pull_request` against `main` (plus
+`workflow_dispatch`). The `pull_request` trigger isn't just a testing
+convenience for the isolated worktree branch — `workflow_dispatch` only
+works for workflow files already present on the repo's default branch, so
+without it there'd be no way to exercise the pipeline from a feature branch
+before merging. It also reflects a genuinely standard real-world pattern
+(test on PR, deploy on merge to main).
+
 **Files:**
 - Create: `.github/workflows/ci.yml`
 
@@ -446,6 +454,8 @@ name: CI
 
 on:
   push:
+    branches: [main]
+  pull_request:
     branches: [main]
   workflow_dispatch: {}
 
@@ -638,6 +648,8 @@ Expected: JSON block with `"iss": "https://token.actions.githubusercontent.com"`
 - Consumes: the `push` job's `image-name` output (Task 5, `needs.push.outputs.image-name`, e.g. `ghcr.io/husnain062/ci-cd-learning-lab`), chart from Task 4 (`./chart`).
 - Produces: a running pod in an ephemeral `kind` cluster, serving the app, configured with a secret obtained via real OIDC federation with a self-hosted Vault — verified by a `curl` against the live service, printed to the job log.
 
+> **Note (post-implementation):** the example `bound_claims` below shows the originally-planned sub-based, ref-restricted binding. The shipped implementation instead binds on `{"repository": "Husnain062/ci-cd-learning-lab"}` — see `docs/aws-oidc-reference.md` for the real config and the reasoning. This plan file is kept as the original design record and is not updated to match.
+
 - [ ] **Step 1: Append the `deploy` job**
 
 Add to `.github/workflows/ci.yml`, as a new job alongside the others:
@@ -787,6 +799,8 @@ Expected: the token-exchange line, followed by real JSON containing `"message": 
 **Interfaces:**
 - Consumes: the real `sub` claim value observed in Task 6 (`repo:Husnain062/ci-cd-learning-lab:ref:refs/heads/main`) and the real Vault `bound_claims` config written in Task 7.
 - Produces: a standalone reference doc — not executed by any job, not linked from the pipeline.
+
+> **Note (post-implementation):** the example `bound_claims` below shows the originally-planned sub-based, ref-restricted binding. The shipped implementation instead binds on `{"repository": "Husnain062/ci-cd-learning-lab"}` — see `docs/aws-oidc-reference.md` for the real config and the reasoning. This plan file is kept as the original design record and is not updated to match.
 
 - [ ] **Step 1: Write the reference doc**
 

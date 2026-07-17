@@ -1,0 +1,225 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  lint:
+    name: Lint Dockerfile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: app/Dockerfile
+
+  test:
+    name: Test app
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: app/package-lock.json
+      - name: Install dependencies
+        working-directory: app
+        run: npm ci
+      - name: Run tests
+        working-directory: app
+        run: npm test
+
+  build:
+    name: Build image
+    needs: [test, lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: app
+          tags: app:ci
+          outputs: type=docker,dest=/tmp/app-image.tar
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-image
+          path: /tmp/app-image.tar
+          retention-days: 1
+
+  push:
+    name: Push image to GHCR
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image-name: ${{ steps.image.outputs.name }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: app-image
+          path: /tmp
+      - name: Load image
+        run: docker load --input /tmp/app-image.tar
+      - name: Compute image name
+        id: image
+        run: echo "name=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Tag and push
+        run: |
+          docker tag app:ci ${{ steps.image.outputs.name }}:latest
+          docker tag app:ci ${{ steps.image.outputs.name }}:${{ github.sha }}
+          docker push ${{ steps.image.outputs.name }}:latest
+          docker push ${{ steps.image.outputs.name }}:${{ github.sha }}
+
+  inspect-oidc:
+    name: Inspect OIDC token
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Request and decode OIDC token
+        run: |
+          TOKEN=$(curl -sSL -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=ci-cd-learning-lab" | jq -r '.value')
+
+          python3 -c "
+          import base64, json, sys
+          token = sys.argv[1]
+          payload = token.split('.')[1]
+          padded = payload + '=' * (-len(payload) % 4)
+          claims = json.loads(base64.urlsafe_b64decode(padded))
+          print(json.dumps({k: claims.get(k) for k in ['iss', 'aud', 'sub', 'repository', 'ref']}, indent=2))
+          " "$TOKEN"
+
+  deploy:
+    name: Federate with Vault and deploy via Helm
+    needs: push
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    permissions:
+      id-token: write
+      contents: read
+      packages: read
+    services:
+      vault:
+        image: hashicorp/vault:1.17
+        ports:
+          - 8200:8200
+        env:
+          VAULT_DEV_ROOT_TOKEN_ID: root
+          VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+        options: --cap-add=IPC_LOCK
+    env:
+      VAULT_ADDR: http://127.0.0.1:8200
+      VAULT_TOKEN: root
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Vault CLI
+        run: |
+          curl -sSL https://releases.hashicorp.com/vault/1.17.6/vault_1.17.6_linux_amd64.zip -o vault.zip
+          unzip -o vault.zip
+          sudo mv vault /usr/local/bin/vault
+          vault version
+
+      - name: Configure Vault JWT auth to trust GitHub OIDC
+        run: |
+          vault auth enable jwt
+
+          vault write auth/jwt/config \
+            oidc_discovery_url="https://token.actions.githubusercontent.com" \
+            bound_issuer="https://token.actions.githubusercontent.com"
+
+          vault policy write demo-secret-read - <<'EOF'
+          path "secret/data/demo" {
+            capabilities = ["read"]
+          }
+          EOF
+
+          # bound_claims is a map-typed field: the CLI's key=value form can't
+          # type a JSON object correctly (it errors "expected a map, got
+          # 'string'"), so the role is written as a JSON body over stdin,
+          # which preserves the object type for bound_claims.
+          vault write auth/jwt/role/ci-cd-learning-lab - <<EOF
+          {
+            "role_type": "jwt",
+            "bound_audiences": "ci-cd-learning-lab",
+            "bound_claims_type": "glob",
+            "bound_claims": {"repository": "${{ github.repository }}"},
+            "user_claim": "sub",
+            "policies": "demo-secret-read",
+            "ttl": "5m"
+          }
+          EOF
+
+          vault secrets enable -path=secret kv-v2 || echo "secret/ kv-v2 already enabled by Vault dev mode — continuing"
+          vault kv put secret/demo value="hello-from-vault"
+
+      - name: Authenticate to Vault with the real GitHub OIDC token
+        id: vault
+        run: |
+          GH_OIDC_TOKEN=$(curl -sSL -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=ci-cd-learning-lab" | jq -r '.value')
+
+          VAULT_LOGIN_TOKEN=$(vault write -field=token auth/jwt/login \
+            role="ci-cd-learning-lab" jwt="$GH_OIDC_TOKEN")
+
+          echo "Vault issued a token in exchange for the GitHub OIDC JWT: ${VAULT_LOGIN_TOKEN:0:12}..."
+
+          SECRET_VALUE=$(VAULT_TOKEN="$VAULT_LOGIN_TOKEN" vault kv get -field=value secret/demo)
+
+          # Intentionally not masked: this is a non-sensitive demo value
+          # ("hello-from-vault"), and the whole point of this job is to
+          # prove, from the log, that it made it end-to-end from Vault to
+          # the live pod's HTTP response.
+          echo "value=$SECRET_VALUE" >> "$GITHUB_OUTPUT"
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1.10.0
+        with:
+          cluster_name: lab
+
+      - name: Create GHCR pull secret
+        run: |
+          kubectl create secret docker-registry ghcr-creds \
+            --docker-server=ghcr.io \
+            --docker-username=${{ github.actor }} \
+            --docker-password=${{ secrets.GITHUB_TOKEN }}
+
+      - name: Deploy with Helm
+        run: |
+          helm install lab ./chart \
+            --set image.repository=${{ needs.push.outputs.image-name }} \
+            --set image.tag=${{ github.sha }} \
+            --set secret.value="${{ steps.vault.outputs.value }}" \
+            --set imagePullSecrets[0].name=ghcr-creds \
+            --wait --timeout 120s
+
+      - name: Verify pod is running and app responds
+        run: |
+          kubectl get pods
+          kubectl port-forward svc/lab 8080:80 &
+          sleep 3
+          echo "Response from the live pod, containing the value fetched via Vault OIDC federation:"
+          curl -sf http://localhost:8080/ | jq .
