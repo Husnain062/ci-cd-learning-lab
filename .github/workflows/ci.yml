@@ -155,14 +155,21 @@ jobs:
           }
           EOF
 
-          vault write auth/jwt/role/ci-cd-learning-lab \
-            role_type="jwt" \
-            bound_audiences="ci-cd-learning-lab" \
-            bound_claims_type="glob" \
-            bound_claims="{\"repository\":\"${{ github.repository }}\"}" \
-            user_claim="sub" \
-            policies="demo-secret-read" \
-            ttl="5m"
+          # bound_claims is a map-typed field: the CLI's key=value form can't
+          # type a JSON object correctly (it errors "expected a map, got
+          # 'string'"), so the role is written as a JSON body over stdin,
+          # which preserves the object type for bound_claims.
+          vault write auth/jwt/role/ci-cd-learning-lab - <<EOF
+          {
+            "role_type": "jwt",
+            "bound_audiences": "ci-cd-learning-lab",
+            "bound_claims_type": "glob",
+            "bound_claims": {"repository": "${{ github.repository }}"},
+            "user_claim": "sub",
+            "policies": "demo-secret-read",
+            "ttl": "5m"
+          }
+          EOF
 
           vault secrets enable -path=secret kv-v2 || echo "secret/ kv-v2 already enabled by Vault dev mode — continuing"
           vault kv put secret/demo value="hello-from-vault"
