@@ -431,6 +431,14 @@ git push
 
 ## Task 5: CI pipeline — lint, test, build, push
 
+The workflow triggers on both `push` and `pull_request` against `main` (plus
+`workflow_dispatch`). The `pull_request` trigger isn't just a testing
+convenience for the isolated worktree branch — `workflow_dispatch` only
+works for workflow files already present on the repo's default branch, so
+without it there'd be no way to exercise the pipeline from a feature branch
+before merging. It also reflects a genuinely standard real-world pattern
+(test on PR, deploy on merge to main).
+
 **Files:**
 - Create: `.github/workflows/ci.yml`
 
@@ -446,6 +454,8 @@ name: CI
 
 on:
   push:
+    branches: [main]
+  pull_request:
     branches: [main]
   workflow_dispatch: {}
 
