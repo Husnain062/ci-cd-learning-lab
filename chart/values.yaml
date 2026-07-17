@@ -1,0 +1,16 @@
+image:
+  repository: ghcr.io/example/ci-cd-learning-lab
+  tag: latest
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 3000
+
+secret:
+  value: "placeholder-not-set"
+
+imagePullSecrets: []
