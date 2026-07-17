@@ -187,7 +187,10 @@ jobs:
 
           SECRET_VALUE=$(VAULT_TOKEN="$VAULT_LOGIN_TOKEN" vault kv get -field=value secret/demo)
 
-          echo "::add-mask::$SECRET_VALUE"
+          # Intentionally not masked: this is a non-sensitive demo value
+          # ("hello-from-vault"), and the whole point of this job is to
+          # prove, from the log, that it made it end-to-end from Vault to
+          # the live pod's HTTP response.
           echo "value=$SECRET_VALUE" >> "$GITHUB_OUTPUT"
 
       - name: Create kind cluster
