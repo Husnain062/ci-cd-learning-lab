@@ -11,7 +11,7 @@ test('GET / returns json with a message and secret field', async () => {
     assert.strictEqual(res.status, 200);
 
     const body = await res.json();
-    assert.strictEqual(body.message, 'ci-cd-learning-lab is alive');
+    assert.strictEqual(body.message, 'this assertion is intentionally wrong');
     assert.ok('secret' in body);
   } finally {
     server.close();
