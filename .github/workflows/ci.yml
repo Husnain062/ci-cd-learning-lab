@@ -89,3 +89,24 @@ jobs:
           docker tag app:ci ${{ steps.image.outputs.name }}:${{ github.sha }}
           docker push ${{ steps.image.outputs.name }}:latest
           docker push ${{ steps.image.outputs.name }}:${{ github.sha }}
+
+  inspect-oidc:
+    name: Inspect OIDC token
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Request and decode OIDC token
+        run: |
+          TOKEN=$(curl -sSL -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=ci-cd-learning-lab" | jq -r '.value')
+
+          python3 -c "
+          import base64, json, sys
+          token = sys.argv[1]
+          payload = token.split('.')[1]
+          padded = payload + '=' * (-len(payload) % 4)
+          claims = json.loads(base64.urlsafe_b64decode(padded))
+          print(json.dumps({k: claims.get(k) for k in ['iss', 'aud', 'sub', 'repository', 'ref']}, indent=2))
+          " "$TOKEN"
